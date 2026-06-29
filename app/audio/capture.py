@@ -21,6 +21,7 @@ class AudioManager:
         self.initialized = False
         self.recorder_probe_ok = False
         self._source_type = "loopback"
+        self.last_error = ""
 
     @property
     def source_type(self) -> str:
@@ -80,6 +81,7 @@ class AudioManager:
                 self.loopback_speaker_name = ""
                 self.initialized = False
                 self.recorder_probe_ok = False
+                self.last_error = str(e)
                 self.logger.error(f"Audio initialization error: {e}")
                 return False
 
@@ -100,6 +102,7 @@ class AudioManager:
         if self.is_recording:
             return True
 
+        self.last_error = ""
         self.is_recording = True
         self.record_thread = threading.Thread(
             target=self._record_worker, args=(audio_queue,), daemon=True
@@ -128,6 +131,7 @@ class AudioManager:
                     except queue.Full:
                         self.logger.warning("Audio queue full — frame dropped")
         except Exception as e:
+            self.last_error = str(e)
             self.logger.error(f"Recording error: {e}")
             self.is_recording = False
             self.initialized = False

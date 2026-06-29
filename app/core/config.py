@@ -26,6 +26,9 @@ class SimpleConfig:
             "compute_backend_label": "CPU",
             "device_profile": "mid",
             "audio_queue_size": 2000,
+            "audio_spool_enabled": True,
+            "audio_spool_min_free_mb": 1024,
+            "audio_spool_stale_cleanup_hours": 24,
             "partial_translation_delay_ms": 500,
             "stable_translation_flush_delay_ms": 650,
             "stable_translation_short_delay_ms": 450,
@@ -91,6 +94,7 @@ class SimpleConfig:
         self._normalize_language_config()
         self._normalize_latency_config()
         self._normalize_integration_api_config()
+        self._normalize_audio_spool_config()
 
     def _normalize_language_config(self):
         """Keep legacy language config compatible with the new input/output split."""
@@ -180,12 +184,31 @@ class SimpleConfig:
             port = 8765
         self.config["integration_api_port"] = port
 
+    def _normalize_audio_spool_config(self):
+        """Keep disk-backed audio buffering enabled with safe numeric bounds."""
+        self.config["audio_spool_enabled"] = self._coerce_bool(
+            self.config.get("audio_spool_enabled", True), True
+        )
+        self.config["audio_spool_min_free_mb"] = self._bounded_int(
+            "audio_spool_min_free_mb", 1024, 64, 1024 * 1024
+        )
+        self.config["audio_spool_stale_cleanup_hours"] = self._bounded_int(
+            "audio_spool_stale_cleanup_hours", 24, 1, 24 * 30
+        )
+
     def _capped_int(self, key: str, default: int, maximum: int) -> int:
         try:
             value = int(self.config.get(key, default))
         except Exception:
             value = default
         return max(1, min(value, maximum))
+
+    def _bounded_int(self, key: str, default: int, minimum: int, maximum: int) -> int:
+        try:
+            value = int(self.config.get(key, default))
+        except Exception:
+            value = default
+        return max(minimum, min(value, maximum))
 
     def _coerce_bool(self, value, default: bool) -> bool:
         if isinstance(value, bool):

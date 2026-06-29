@@ -362,6 +362,71 @@ class MainWindowStateTest(unittest.TestCase):
         self.assertLessEqual(len(message), 225)
         self.assertTrue(message.endswith("Click Retry Start."))
 
+    def test_audio_capture_failure_error_stops_running_state(self):
+        app = make_app()
+        status_updates = []
+        idle_updates = []
+        stopped = []
+
+        app.is_recognizing = True
+        app.speech_recognizer = SimpleNamespace(model_loaded=True)
+        app.audio_manager = SimpleNamespace(
+            stop_stream=lambda timeout=2.0: stopped.append(timeout)
+        )
+        app._set_status_state = lambda state, message: status_updates.append(
+            (state, message)
+        )
+        app._set_start_button_idle = (
+            lambda state="normal", text="Start Transcription": idle_updates.append(
+                (state, text)
+            )
+        )
+
+        app._on_error(
+            "Audio capture stopped unexpectedly. Check the selected audio device, "
+            "then click Retry Start."
+        )
+
+        self.assertFalse(app.is_recognizing)
+        self.assertTrue(app.recognition_ready)
+        self.assertEqual(stopped, [0.0])
+        self.assertEqual(idle_updates[-1], ("normal", "Retry Start"))
+        self.assertEqual(status_updates[-1][0], "error")
+        self.assertIn("Audio capture stopped unexpectedly", status_updates[-1][1])
+
+    def test_audio_spool_low_disk_error_stops_running_state(self):
+        app = make_app()
+        status_updates = []
+        idle_updates = []
+        stopped = []
+
+        app.is_recognizing = True
+        app.speech_recognizer = SimpleNamespace(model_loaded=True)
+        app.audio_manager = SimpleNamespace(
+            stop_stream=lambda timeout=2.0: stopped.append(timeout)
+        )
+        app._set_status_state = lambda state, message: status_updates.append(
+            (state, message)
+        )
+        app._set_start_button_idle = (
+            lambda state="normal", text="Start Transcription": idle_updates.append(
+                (state, text)
+            )
+        )
+
+        app._on_error(
+            "Audio spool disk space is low. Free disk space, then click Retry Start."
+        )
+
+        self.assertFalse(app.is_recognizing)
+        self.assertEqual(stopped, [0.0])
+        self.assertEqual(idle_updates[-1], ("normal", "Retry Start"))
+        self.assertEqual(status_updates[-1][0], "error")
+        self.assertEqual(
+            status_updates[-1][1],
+            "Audio spool disk space is low. Free disk space, then click Retry Start.",
+        )
+
     def test_main_window_layout_configures_expandable_columns(self):
         app = make_app()
         root = FakeLayoutWidget()

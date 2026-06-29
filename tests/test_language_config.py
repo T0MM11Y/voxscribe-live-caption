@@ -96,6 +96,20 @@ class LanguageConfigTest(unittest.TestCase):
         self.assertEqual(config.config["integration_api_port"], 8765)
         self.assertFalse(config.config["integration_api_docs_enabled"])
 
+    def test_audio_spool_config_is_normalized(self):
+        config = SimpleConfig.__new__(SimpleConfig)
+        config.config = {
+            "audio_spool_enabled": "yes",
+            "audio_spool_min_free_mb": "1",
+            "audio_spool_stale_cleanup_hours": "9999",
+        }
+
+        config._normalize_audio_spool_config()
+
+        self.assertTrue(config.config["audio_spool_enabled"])
+        self.assertEqual(config.config["audio_spool_min_free_mb"], 64)
+        self.assertEqual(config.config["audio_spool_stale_cleanup_hours"], 24 * 30)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2510,7 +2510,11 @@ class VoxScribeApp:
         self._set_status_state("error", friendly_error)
 
     def _is_audio_capture_stopped_error(self, error) -> bool:
-        return "audio capture stopped unexpectedly" in str(error or "").lower()
+        lowered = str(error or "").lower()
+        return (
+            "audio capture stopped unexpectedly" in lowered
+            or "audio spool" in lowered
+        )
 
     def _handle_fatal_recognition_error(self, friendly_error: str):
         self.is_recognizing = False
@@ -2536,6 +2540,13 @@ class VoxScribeApp:
             return "Transcription stopped unexpectedly. Click Retry Start."
 
         lowered = raw_error.lower()
+        if "audio spool disk space is low" in lowered:
+            return "Audio spool disk space is low. Free disk space, then click Retry Start."
+        if "audio spool" in lowered:
+            return (
+                "Audio buffering stopped unexpectedly. Check disk space, "
+                "then click Retry Start."
+            )
         if self._is_audio_capture_stopped_error(raw_error):
             return (
                 "Audio capture stopped unexpectedly. Check the selected audio device, "

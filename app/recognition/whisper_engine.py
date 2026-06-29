@@ -6,7 +6,7 @@ import time
 
 import numpy as np
 
-from app.core.languages import INPUT_LANGUAGE_REGISTRY
+from app.audio.spool import DiskBackedAudioQueue
 from app.core.logging import SimpleLogger
 from app.dependencies import faster_whisper
 from app.services.glossary import apply_source_glossary
@@ -39,15 +39,12 @@ class WhisperRecognizer:
             self.model_compute_type = "int8"
         self.model_loaded = False
 
-        self.audio_queue = queue.Queue(
-            maxsize=int(config.get("audio_queue_size", 50))
-        )
+        self.audio_queue = self._create_memory_audio_queue()
         self.is_running = False
         self.recognition_thread = None
         self.audio_manager = None
         self.active_language_code = "en"
 
-        self.partial_callback = None
         self.final_callback = None
         self.error_callback = None
         self.backlog_callback = None
@@ -92,9 +89,7 @@ class WhisperRecognizer:
         self.model = None
         self.model_loaded = False
 
-    def set_callbacks(self, partial_callback=None, final_callback=None,
-                      error_callback=None, backlog_callback=None):
-        self.partial_callback = partial_callback
+    def set_callbacks(self, final_callback=None, error_callback=None, backlog_callback=None):
         self.final_callback = final_callback
         self.error_callback = error_callback
         self.backlog_callback = backlog_callback
@@ -107,11 +102,15 @@ class WhisperRecognizer:
             if not self.load_model():
                 return False
 
-        while not self.audio_queue.empty():
-            try:
-                self.audio_queue.get_nowait()
-            except queue.Empty:
-                break
+        self._close_audio_queue()
+        try:
+            self.audio_queue = self._create_audio_queue()
+        except Exception as e:
+            self.logger.error(f"Failed to initialize audio spool: {e}")
+            self._emit_error(e)
+            return False
+
+        self._clear_audio_queue()
 
         self.audio_buffer = bytearray()
         self.is_running = True
@@ -121,6 +120,7 @@ class WhisperRecognizer:
         if not audio_manager.start_stream(self.audio_queue):
             self.is_running = False
             self.audio_manager = None
+            self._close_audio_queue()
             return False
 
         self.audio_manager = audio_manager
@@ -135,15 +135,67 @@ class WhisperRecognizer:
 
     def stop_recognition(self, timeout=2.0):
         self.is_running = False
+        audio_manager = self.audio_manager
+        if audio_manager and hasattr(audio_manager, "stop_stream"):
+            try:
+                audio_manager.stop_stream(timeout=timeout)
+            except Exception as e:
+                self.logger.error(f"Failed to stop audio capture: {e}")
         if (
             self.recognition_thread
             and self.recognition_thread.is_alive()
             and threading.current_thread() is not self.recognition_thread
         ):
             self.recognition_thread.join(timeout=max(0.0, timeout))
+        self._close_audio_queue()
         self.audio_manager = None
         self._backlog_seconds = 0.0
         self.logger.info("Whisper recognition stopped")
+
+    def _create_memory_audio_queue(self):
+        return queue.Queue(maxsize=int(self.config.get("audio_queue_size", 50)))
+
+    def _create_audio_queue(self):
+        if not self._config_bool("audio_spool_enabled", True):
+            return self._create_memory_audio_queue()
+
+        return DiskBackedAudioQueue(
+            sample_rate=self.sample_rate,
+            min_free_mb=int(self.config.get("audio_spool_min_free_mb", 1024)),
+            stale_cleanup_hours=int(
+                self.config.get("audio_spool_stale_cleanup_hours", 24)
+            ),
+            logger=self.logger,
+        )
+
+    def _config_bool(self, key, default=False):
+        value = self.config.get(key, default)
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return default
+        if isinstance(value, (int, float)):
+            return bool(value)
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+    def _clear_audio_queue(self):
+        if hasattr(self.audio_queue, "clear"):
+            self.audio_queue.clear()
+            return
+
+        while not self.audio_queue.empty():
+            try:
+                self.audio_queue.get_nowait()
+            except queue.Empty:
+                break
+
+    def _close_audio_queue(self):
+        audio_queue = getattr(self, "audio_queue", None)
+        if audio_queue and hasattr(audio_queue, "close"):
+            try:
+                audio_queue.close()
+            except Exception as e:
+                self.logger.error(f"Failed to close audio spool: {e}")
 
     def switch_language(self, language_code):
         self.active_language_code = language_code
@@ -200,6 +252,16 @@ class WhisperRecognizer:
         }
         self.root.after(0, lambda p=payload: self.backlog_callback(p))
 
+    def _queued_audio_seconds(self, queue_size):
+        if hasattr(self.audio_queue, "backlog_seconds"):
+            return float(getattr(self.audio_queue, "backlog_seconds"))
+
+        bytes_per_second = self.sample_rate * 2
+        if queue_size <= 0:
+            return 0.0
+        chunk_size = int(self.config.get("chunk_size", 4096))
+        return (queue_size * chunk_size * 2) / bytes_per_second
+
     def _emit_error(self, error):
         if not self.error_callback:
             return
@@ -226,7 +288,8 @@ class WhisperRecognizer:
         return True
 
     def _stop_after_capture_failure(self):
-        self.logger.error(CAPTURE_STOPPED_ERROR)
+        error_text = self._capture_failure_error()
+        self.logger.error(error_text)
         self.is_running = False
         self._backlog_seconds = 0.0
 
@@ -237,7 +300,24 @@ class WhisperRecognizer:
             except Exception as e:
                 self.logger.error(f"Failed to stop audio capture after failure: {e}")
 
-        self._emit_error(CAPTURE_STOPPED_ERROR)
+        self.audio_manager = None
+        self._close_audio_queue()
+        self._emit_error(error_text)
+
+    def _capture_failure_error(self):
+        audio_manager = self.audio_manager
+        if audio_manager is not None:
+            last_error = str(getattr(audio_manager, "last_error", "") or "").strip()
+            if last_error:
+                return last_error
+
+        audio_queue = getattr(self, "audio_queue", None)
+        if audio_queue is not None:
+            last_error = str(getattr(audio_queue, "last_error", "") or "").strip()
+            if last_error:
+                return last_error
+
+        return CAPTURE_STOPPED_ERROR
 
     def _is_hallucination(self, seg):
         if hasattr(seg, "no_speech_prob") and seg.no_speech_prob > self.no_speech_threshold:
@@ -270,6 +350,9 @@ class WhisperRecognizer:
                 self.audio_buffer.extend(data)
             except queue.Empty:
                 continue
+            except Exception:
+                self._stop_after_capture_failure()
+                break
 
             if len(self.audio_buffer) < self._chunk_bytes:
                 continue
@@ -337,10 +420,7 @@ class WhisperRecognizer:
 
                 queue_size = self.audio_queue.qsize()
                 bytes_per_second = self.sample_rate * 2
-                queued_audio_seconds = 0.0
-                if queue_size > 0:
-                    chunk_size = int(self.config.get("chunk_size", 4096))
-                    queued_audio_seconds = (queue_size * chunk_size * 2) / bytes_per_second
+                queued_audio_seconds = self._queued_audio_seconds(queue_size)
                 self._backlog_seconds = queued_audio_seconds + len(self.audio_buffer) / bytes_per_second
 
                 now = time.time()

@@ -1,12 +1,16 @@
 import unittest
 
 from app.core.languages import INPUT_LANGUAGE_REGISTRY
+from app.audio.spool import DiskBackedAudioQueue
 from app.recognition.whisper_engine import WhisperRecognizer
 
 
 class FakeConfig:
+    def __init__(self, values=None):
+        self.values = values or {}
+
     def get(self, key, default=None):
-        return default
+        return self.values.get(key, default)
 
 
 class FakeLogger:
@@ -14,6 +18,9 @@ class FakeLogger:
         pass
 
     def error(self, _message):
+        pass
+
+    def warning(self, _message):
         pass
 
     def debug(self, _message):
@@ -41,12 +48,42 @@ class DeadAudioManager:
         self.is_recording = False
 
 
+class AliveThread:
+    def __init__(self):
+        self.alive = True
+
+    def is_alive(self):
+        return self.alive
+
+
+class RecordingAudioManager:
+    def __init__(self):
+        self.audio_queue = None
+        self.is_recording = False
+        self.record_thread = AliveThread()
+        self.stop_timeout = None
+
+    def start_stream(self, audio_queue):
+        self.audio_queue = audio_queue
+        self.is_recording = True
+        self.record_thread.alive = True
+        return True
+
+    def stop_stream(self, timeout=2.0):
+        self.stop_timeout = timeout
+        self.is_recording = False
+        self.record_thread.alive = False
+
+
 class FakeModelManager:
     def __init__(self, auto=False):
         self._auto = auto
 
     def get_input_language(self, language_code=None):
         return INPUT_LANGUAGE_REGISTRY[language_code or "en"]
+
+    def get_input_language_code(self):
+        return "en"
 
     def is_auto_input_language(self, language_code=None):
         return self._auto
@@ -100,6 +137,32 @@ class WhisperEngineTest(unittest.TestCase):
         self.assertEqual(audio_manager.stop_timeout, 0.0)
         self.assertEqual(len(errors), 1)
         self.assertIn("Audio capture stopped unexpectedly", errors[0])
+
+    def test_start_recognition_uses_disk_spool_when_enabled(self):
+        recognizer = WhisperRecognizer(
+            FakeConfig(
+                {
+                    "audio_spool_enabled": True,
+                    "audio_spool_min_free_mb": 0,
+                    "audio_spool_stale_cleanup_hours": 24,
+                }
+            ),
+            FakeModelManager(),
+            FakeLogger(),
+        )
+        recognizer.model_loaded = True
+        audio_manager = RecordingAudioManager()
+
+        started = recognizer.start_recognition(audio_manager)
+        captured_queue = audio_manager.audio_queue
+        try:
+            self.assertTrue(started)
+            self.assertIsInstance(captured_queue, DiskBackedAudioQueue)
+            self.assertTrue(captured_queue.session_dir.exists())
+        finally:
+            recognizer.stop_recognition(timeout=1.0)
+
+        self.assertFalse(captured_queue.session_dir.exists())
 
 
 if __name__ == "__main__":
