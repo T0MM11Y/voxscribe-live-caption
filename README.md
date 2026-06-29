@@ -50,8 +50,8 @@ VoxScribe captures your system audio output (loopback) or microphone, transcribe
 ### Run
 
 ```bash
-git clone https://github.com/T0MM11Y/VoxScribe.git
-cd VoxScribe
+git clone https://github.com/T0MM11Y/voxscribe-live-caption.git
+cd voxscribe-live-caption
 python main.py
 ```
 
