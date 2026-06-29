@@ -1,0 +1,38 @@
+# Default: ignore everything
+*
+
+# Keep only the files/folders needed to run the app
+!.gitignore
+!main.py
+!app/
+!app/**
+!tests/
+!tests/**
+!screenshots/
+!screenshots/**
+!README.md
+!build_exe.py
+!VoxScribe.spec
+
+# Re-ignore generated/cache files inside allowed folders
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.log
+tmp/
+temp/
+*.egg-info/
+dist/
+build/
+*.manifest
+*.spec.bak
